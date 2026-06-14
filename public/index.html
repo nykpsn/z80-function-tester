@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Z80 Function Tester</title>
+<style>
+  :root {
+    --bg: #1e1e2e; --panel: #28283c; --ink: #cdd6f4; --muted: #9399b2;
+    --accent: #89b4fa; --good: #a6e3a1; --bad: #f38ba8; --border: #45475a;
+    --mono: ui-monospace, "Cascadia Code", "Consolas", monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: system-ui, sans-serif; line-height: 1.4;
+  }
+  header { padding: 12px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: baseline; gap: 12px; }
+  header h1 { font-size: 18px; margin: 0; }
+  header span { color: var(--muted); font-size: 13px; }
+  main { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px; align-items: start; }
+  /* Two independent columns: left = source + memory, right = listing + result.
+     Independent so a tall source panel doesn't push the result panel down. */
+  .col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
+  .source.dragover { outline: 2px dashed var(--accent); outline-offset: -4px; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0 0 10px; }
+  .h2-hint { text-transform: none; letter-spacing: 0; font-weight: normal; color: var(--muted); opacity: .8; }
+  textarea {
+    width: 100%; min-height: 340px; resize: vertical; background: #181825; color: var(--ink);
+    border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-family: var(--mono); font-size: 13px;
+    tab-size: 8;
+  }
+  .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; margin-top: 10px; }
+  .controls label { display: flex; flex-direction: column; font-size: 12px; color: var(--muted); gap: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .controls input, .controls select {
+    background: #181825; color: var(--ink); border: 1px solid var(--border);
+    border-radius: 5px; padding: 6px 8px; font-family: var(--mono); font-size: 13px;
+  }
+  .tabbar { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 8px; align-items: center; }
+  .tab {
+    display: flex; align-items: center; gap: 6px; background: #181825; color: var(--muted);
+    border: 1px solid var(--border); border-bottom: none; border-radius: 6px 6px 0 0;
+    padding: 6px 10px; font-size: 13px; cursor: pointer;
+  }
+  .tab.active { background: var(--panel); color: var(--ink); border-color: var(--accent); }
+  .tab .name { background: transparent; border: none; color: inherit; font: inherit; width: auto; min-width: 40px; max-width: 140px; outline: none; cursor: text; }
+  .tab .close { color: var(--muted); border: none; background: transparent; cursor: pointer; font-size: 14px; padding: 0 2px; line-height: 1; }
+  .tab .close:hover { color: var(--bad); }
+  .tab-add {
+    background: transparent; color: var(--accent); border: 1px dashed var(--border);
+    border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 13px;
+  }
+  button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+  .full { grid-column: 1 / -1; }
+  .row { display: flex; gap: 10px; align-items: center; margin-top: 12px; }
+  button {
+    background: var(--accent); color: #11111b; border: none; border-radius: 6px;
+    padding: 9px 18px; font-weight: 600; font-size: 14px; cursor: pointer;
+  }
+  button:hover { filter: brightness(1.08); }
+  .status { font-size: 13px; }
+  .status.good { color: var(--good); } .status.bad { color: var(--bad); }
+  pre { font-family: var(--mono); font-size: 13px; margin: 0; white-space: pre-wrap; word-break: break-word; }
+  .regs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; font-family: var(--mono); font-size: 13px; }
+  .regs .cell { background: #181825; border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px; }
+  .regs .cell b { color: var(--accent); }
+  .regs .cell.changed { border-color: var(--good); background: #1b2a1f; }
+  .regs .cell .init { color: #f9e2af; font-size: 11px; margin-left: 6px; }
+  .stepper { margin-top: 12px; padding: 10px; background: #181825; border: 1px solid var(--border); border-radius: 6px; }
+  .step-controls { display: flex; align-items: center; gap: 8px; }
+  .step-controls button { background: var(--panel); color: var(--ink); border: 1px solid var(--border); border-radius: 5px; padding: 4px 10px; font-size: 13px; }
+  .step-label { font-family: var(--mono); font-size: 13px; color: var(--muted); min-width: 120px; text-align: center; }
+  .step-slider { width: 100%; margin-top: 8px; accent-color: var(--accent); }
+  .step-instr { font-family: var(--mono); font-size: 12px; color: var(--accent); margin-top: 6px; min-height: 16px; }
+  #listing .cur { background: #313244; color: var(--good); display: inline-block; width: 100%; }
+  .listing { max-height: 360px; overflow: auto; background: #181825; border: 1px solid var(--border); border-radius: 6px; padding: 10px; white-space: pre; }
+  .subtabs { display: flex; gap: 4px; margin-bottom: 10px; }
+  .subtab { background: #181825; color: var(--muted); border: 1px solid var(--border); border-radius: 6px; padding: 5px 14px; cursor: pointer; font-size: 12px; }
+  .subtab.active { background: var(--panel); color: var(--ink); border-color: var(--accent); }
+  .subpane[hidden] { display: none; }
+  #memory pre, #portLog pre { max-height: 320px; overflow: auto; }
+  #portLog .meta, #memory .meta { color: var(--muted); font-size: 12px; }
+  .flags { display: flex; gap: 6px; margin-top: 12px; font-family: var(--mono); }
+  .flag { padding: 4px 9px; border-radius: 5px; border: 1px solid var(--border); background: #181825; color: var(--muted); }
+  .flag.on { background: var(--good); color: #11111b; border-color: var(--good); font-weight: 700; }
+  .meta { color: var(--muted); font-size: 12px; margin-top: 10px; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  details { margin-top: 12px; } summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Z80 Function Tester</h1>
+  <span>assemble &middot; run &middot; inspect</span>
+</header>
+<main>
+  <div class="col">
+  <section class="panel source">
+    <h2>Z80 source <span class="h2-hint">— drop .asm / .inc / .txt files to open in tabs</span></h2>
+    <div id="tabbar" class="tabbar"></div>
+    <textarea id="source" spellcheck="false"></textarea>
+    <div class="controls">
+      <label title="Assembler backend">Assembler
+        <select id="assembler">
+          <option value="z80asm">z80-asm (built-in)</option>
+          <option value="wla">WLA-DX (external)</option>
+        </select>
+      </label>
+      <label title="Label to begin execution from">Start from label
+        <select id="startLabel">
+          <option value="">(auto / first code)</option>
+        </select>
+      </label>
+      <label title="Seed registers, e.g. b=6 c=7 hl=0x1234">Registers in
+        <input id="regs" type="text" placeholder="b=6 c=7" />
+      </label>
+      <label title="Stack pointer (default 0xFF00)">Stack pointer
+        <input id="sp" type="text" placeholder="0xFF00" />
+      </label>
+      <label title="Memory range to dump, e.g. 0x9000:8">Memory dump
+        <input id="dump" type="text" placeholder="0x9000:8" />
+      </label>
+      <label title="Port(s) to log OUT writes for, e.g. 0xFE (blank = all)">Port dump
+        <input id="portDump" type="text" placeholder="0xFE" />
+      </label>
+    </div>
+    <div class="row">
+      <button id="runBtn">Run &#9654;</button>
+      <button id="compileBtn" class="secondary">Compile</button>
+      <span id="status" class="status"></span>
+    </div>
+    <p class="hint">Each tab is compiled together into one program. Pick a <b>start label</b>
+      to choose which function runs. Click <b>Compile</b> to refresh the label list without
+      running. Drop <code>.asm</code>/<code>.inc</code>/<code>.txt</code> files here to open
+      them in new tabs. Numbers accept decimal or <code>0x</code>/<code>$</code> hex; a final
+      <code>RET</code> stops cleanly. (<code>Ctrl/Cmd+Enter</code> runs.)</p>
+  </section>
+
+  <section class="panel">
+    <h2>Memory / Port</h2>
+    <div class="subtabs">
+      <button id="memTabBtn" class="subtab active">Memory</button>
+      <button id="portTabBtn" class="subtab">Port</button>
+    </div>
+    <div id="memPane" class="subpane">
+      <div id="memory"></div>
+    </div>
+    <div id="portPane" class="subpane" hidden>
+      <div id="portLog"></div>
+    </div>
+  </section>
+  </div>
+
+  <div class="col">
+  <section class="panel">
+    <h2>Assembler listing</h2>
+    <pre id="listing" class="listing"></pre>
+  </section>
+
+  <section class="panel">
+    <h2>Result</h2>
+    <div id="summary" class="meta">Run something to see registers, flags and memory.</div>
+
+    <div id="stepper" class="stepper" hidden>
+      <div class="step-controls">
+        <button id="stepFirst" title="First step">&#x23EE;</button>
+        <button id="stepPrev" title="Previous step">&#x25C0;</button>
+        <span id="stepLabel" class="step-label">step 0</span>
+        <button id="stepNext" title="Next step">&#x25B6;</button>
+        <button id="stepLast" title="Last step">&#x23ED;</button>
+      </div>
+      <input id="stepSlider" class="step-slider" type="range" min="0" max="0" value="0" />
+      <div id="stepInstr" class="step-instr"></div>
+    </div>
+
+    <div id="regsOut" class="regs" style="margin-top:12px"></div>
+    <div id="flags" class="flags"></div>
+  </section>
+  </div>
+</main>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>

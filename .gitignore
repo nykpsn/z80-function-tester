@@ -1,0 +1,8 @@
+node_modules/
+*.log
+.DS_Store
+.claude/
+
+# WLA-DX binaries copied into the project root
+wla-z80.exe
+wlalink.exe
