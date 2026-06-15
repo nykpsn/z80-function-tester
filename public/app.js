@@ -44,6 +44,10 @@ let tabs = [
 let activeIndex = 0;
 let untitledCount = 0;
 
+// Start label requested by a freshly loaded project; applied once the label
+// dropdown is (re)populated, since the labels don't exist until a compile runs.
+let wantStartLabel = null;
+
 const sourceEl = $("source");
 
 function renderTabs() {
@@ -132,6 +136,81 @@ async function openFiles(fileList) {
   activeIndex = tabs.length - 1;
   selectTab(activeIndex);
   scheduleRefresh();
+}
+
+// ---- Save / load project -----------------------------------------------------
+
+const PROJECT_FORMAT = "z80ft-project";
+
+/** Snapshot the whole session (tabs + control fields) for saving. */
+function serializeProject() {
+  return {
+    format: PROJECT_FORMAT,
+    version: 1,
+    tabs: tabs.map((t) => ({ name: t.name, content: t.content })),
+    settings: {
+      assembler: $("assembler").value,
+      startLabel: $("startLabel").value,
+      regs: $("regs").value,
+      sp: $("sp").value,
+      dump: $("dump").value,
+      portDump: $("portDump").value,
+    },
+  };
+}
+
+function saveProject() {
+  const json = JSON.stringify(serializeProject(), null, 2);
+  const blob = new Blob([json], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "project.z80ft";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/** Restore a parsed project object into the UI. */
+function loadProject(obj) {
+  const status = $("status");
+  if (!obj || obj.format !== PROJECT_FORMAT || !Array.isArray(obj.tabs) || obj.tabs.length === 0) {
+    status.textContent = "Not a valid project file.";
+    status.className = "status bad";
+    return;
+  }
+  tabs = obj.tabs.map((t) => ({
+    name: String(t.name ?? "untitled"),
+    content: String(t.content ?? ""),
+  }));
+
+  const s = obj.settings ?? {};
+  if (s.assembler) $("assembler").value = s.assembler;
+  $("regs").value = s.regs ?? "";
+  $("sp").value = s.sp ?? "";
+  $("dump").value = s.dump ?? "";
+  $("portDump").value = s.portDump ?? "";
+  wantStartLabel = s.startLabel ?? "";
+
+  activeIndex = 0;
+  selectTab(0);
+  status.textContent = "Project loaded";
+  status.className = "status good";
+  refreshLabels();
+}
+
+async function openProjectFile(file) {
+  let obj;
+  try {
+    obj = JSON.parse(await file.text());
+  } catch {
+    const status = $("status");
+    status.textContent = "Could not parse project JSON.";
+    status.className = "status bad";
+    return;
+  }
+  loadProject(obj);
 }
 
 sourceEl.addEventListener("input", () => {
@@ -243,6 +322,11 @@ function populateLabels(symbols) {
   }
   // Keep the previous choice if it still exists.
   if ([...sel.options].some((o) => o.value === previous)) sel.value = previous;
+  // A freshly loaded project may want a specific label; apply once it appears.
+  if (wantStartLabel != null && [...sel.options].some((o) => o.value === wantStartLabel)) {
+    sel.value = wantStartLabel;
+    wantStartLabel = null;
+  }
 }
 
 const REG_LAYOUT = [
@@ -276,7 +360,9 @@ function renderFlags(f) {
 function renderMemory(dumps) {
   if (!dumps || dumps.length === 0) { $("memory").innerHTML = ""; return; }
   const blocks = dumps.map((d) => {
-    const rows = [];
+    const addrRows = [];
+    const hexRows = [];
+    const asciiRows = [];
     for (let row = 0; row < d.length; row += 16) {
       const addr = (d.start + row) & 0xffff;
       const cells = [];
@@ -286,11 +372,14 @@ function renderMemory(dumps) {
         cells.push(hex(b, 2));
         ascii.push(b >= 0x20 && b < 0x7f ? String.fromCharCode(b) : ".");
       }
-      rows.push(`  ${hex(addr, 4)}  ${cells.join(" ").padEnd(47)}  ${ascii.join("")}`);
+      addrRows.push(hex(addr, 4));
+      hexRows.push(cells.join(" ").padEnd(47));
+      asciiRows.push(ascii.join(""));
     }
-    return `Memory ${hex(d.start, 4)}..${hex(d.start + d.length - 1, 4)}:\n${rows.join("\n")}`;
+    const title = `Memory ${hex(d.start, 4)}..${hex(d.start + d.length - 1, 4)}:`;
+    return dumpBlock(title, addrRows, hexRows, asciiRows);
   });
-  $("memory").innerHTML = `<pre>${blocks.join("\n\n")}</pre>`;
+  $("memory").innerHTML = blocks.join("");
 }
 
 /** Render OUT writes grouped per port, each as a byte stream (hex + ascii). */
@@ -308,7 +397,8 @@ function renderPortLog(log) {
   }
   const blocks = [];
   for (const [port, vals] of groups) {
-    const rows = [];
+    const hexRows = [];
+    const asciiRows = [];
     for (let i = 0; i < vals.length; i += 16) {
       const cells = [];
       const ascii = [];
@@ -317,11 +407,31 @@ function renderPortLog(log) {
         cells.push(hex(b, 2));
         ascii.push(b >= 0x20 && b < 0x7f ? String.fromCharCode(b) : ".");
       }
-      rows.push(`  ${cells.join(" ").padEnd(47)}  ${ascii.join("")}`);
+      hexRows.push(cells.join(" ").padEnd(47));
+      asciiRows.push(ascii.join(""));
     }
-    blocks.push(`Port ${hex(port, 2)} — ${vals.length} byte(s):\n${rows.join("\n")}`);
+    const title = `Port ${hex(port, 2)} — ${vals.length} byte(s):`;
+    blocks.push(dumpBlock(title, null, hexRows, asciiRows));
   }
-  el.innerHTML = `<pre>${escapeHtml(blocks.join("\n\n"))}</pre>`;
+  el.innerHTML = blocks.join("");
+}
+
+/**
+ * Render a hex dump as a title plus side-by-side <pre> columns: address
+ * (optional), hex bytes, and ASCII. Keeping each in its own element lets the
+ * user select and copy just the hex bytes without the address or ASCII gutter
+ * being mixed into the selection.
+ */
+function dumpBlock(title, addrRows, hexRows, asciiRows) {
+  const addrCol = addrRows
+    ? `<pre class="addr">${escapeHtml(addrRows.join("\n"))}</pre>`
+    : "";
+  return `<div class="dump"><div class="dump-title">${escapeHtml(title)}</div>` +
+    `<div class="dump-cols">` +
+    addrCol +
+    `<pre class="hex">${escapeHtml(hexRows.join("\n"))}</pre>` +
+    `<pre class="ascii">${escapeHtml(asciiRows.join("\n"))}</pre>` +
+    `</div></div>`;
 }
 
 const escapeHtml = (s) =>
@@ -516,11 +626,23 @@ sourcePanel.addEventListener("dragleave", (e) => {
 sourcePanel.addEventListener("drop", (e) => {
   e.preventDefault();
   sourcePanel.classList.remove("dragover");
-  if (e.dataTransfer?.files?.length) openFiles(e.dataTransfer.files);
+  const files = e.dataTransfer?.files;
+  if (!files?.length) return;
+  // A dropped .z80ft file is treated as a project; source files open as tabs.
+  const proj = [...files].find((f) => /\.z80ft$/i.test(f.name));
+  if (proj) openProjectFile(proj);
+  else openFiles(files);
 });
 refreshLabels(); // populate the start-label list on first load
 $("runBtn").addEventListener("click", () => send(false));
 $("compileBtn").addEventListener("click", () => send(true));
+$("saveProjBtn").addEventListener("click", saveProject);
+$("loadProjBtn").addEventListener("click", () => $("projFile").click());
+$("projFile").addEventListener("change", (e) => {
+  const file = e.target.files?.[0];
+  if (file) openProjectFile(file);
+  e.target.value = ""; // allow re-loading the same file
+});
 $("stepSlider").addEventListener("input", (e) => showStep(Number(e.target.value)));
 $("stepFirst").addEventListener("click", () => showStep(0));
 $("stepPrev").addEventListener("click", () => showStep(stepIndex - 1));

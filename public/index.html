@@ -82,18 +82,30 @@
   .subpane[hidden] { display: none; }
   #memory pre, #portLog pre { max-height: 320px; overflow: auto; }
   #portLog .meta, #memory .meta { color: var(--muted); font-size: 12px; }
+  .dump + .dump { margin-top: 14px; }
+  .dump-title { font-family: var(--mono); font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+  .dump-cols { display: flex; gap: 16px; max-height: 320px; overflow: auto; }
+  .dump-cols pre { white-space: pre; word-break: normal; max-height: 100%; overflow: hidden; }
+  .dump-cols .addr, .dump-cols .ascii { color: var(--muted); }
   .flags { display: flex; gap: 6px; margin-top: 12px; font-family: var(--mono); }
   .flag { padding: 4px 9px; border-radius: 5px; border: 1px solid var(--border); background: #181825; color: var(--muted); }
   .flag.on { background: var(--good); color: #11111b; border-color: var(--good); font-weight: 700; }
   .meta { color: var(--muted); font-size: 12px; margin-top: 10px; }
   .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
   details { margin-top: 12px; } summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  .header-actions { margin-left: auto; display: flex; gap: 8px; align-self: center; }
+  header button { padding: 6px 12px; font-size: 13px; font-weight: 600; }
 </style>
 </head>
 <body>
 <header>
   <h1>Z80 Function Tester</h1>
   <span>assemble &middot; run &middot; inspect</span>
+  <div class="header-actions">
+    <button id="saveProjBtn" class="secondary">Save project</button>
+    <button id="loadProjBtn" class="secondary">Load project</button>
+    <input id="projFile" type="file" accept=".z80ft" hidden />
+  </div>
 </header>
 <main>
   <div class="col">

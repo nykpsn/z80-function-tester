@@ -15,7 +15,7 @@ import type {
 
 const DEFAULT_SP = 0xff00;
 const DEFAULT_SENTINEL = 0xffff;
-const DEFAULT_MAX_INSTRUCTIONS = 5_000_000;
+const DEFAULT_MAX_INSTRUCTIONS = 50_000_000;
 const DEFAULT_MAX_TRACE = 50_000;
 
 /** Run an already-assembled image and return the final machine state. */
