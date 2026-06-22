@@ -95,6 +95,22 @@
   details { margin-top: 12px; } summary { cursor: pointer; color: var(--muted); font-size: 12px; }
   .header-actions { margin-left: auto; display: flex; gap: 8px; align-self: center; }
   header button { padding: 6px 12px; font-size: 13px; font-weight: 600; }
+  /* Graph panel */
+  .graph-head { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; margin: 0; }
+  .graph-head .tog { color: var(--accent); font-size: 12px; width: 14px; }
+  .graph-body[hidden] { display: none; }
+  .graph-controls { display: flex; flex-wrap: wrap; gap: 16px; margin: 12px 0; }
+  .axis-group { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted); }
+  .axis-row { display: flex; gap: 6px; }
+  .axis-row select, .axis-row input {
+    background: #181825; color: var(--ink); border: 1px solid var(--border);
+    border-radius: 5px; padding: 6px 8px; font-family: var(--mono); font-size: 13px;
+  }
+  .axis-row input.memaddr { width: 90px; }
+  .axis-row input.memaddr[hidden] { display: none; }
+  .graph-wrap { position: relative; }
+  #graph { width: 100%; height: 320px; background: #181825; border: 1px solid var(--border); border-radius: 6px; display: block; }
+  #graphHint { color: var(--muted); font-size: 12px; margin-top: 8px; }
 </style>
 </head>
 <body>
@@ -130,6 +146,9 @@
       </label>
       <label title="Stack pointer (default 0xFF00)">Stack pointer
         <input id="sp" type="text" placeholder="0xFF00" />
+      </label>
+      <label title="Call the function this many times in a row. Registers in are set only before the first call; later calls reuse the register (incl. SP) and memory state from the previous one.">Loops
+        <input id="loops" type="text" placeholder="1" />
       </label>
       <label title="Memory range to dump, e.g. 0x9000:8">Memory dump
         <input id="dump" type="text" placeholder="0x9000:8" />
@@ -191,6 +210,29 @@
     <div id="flags" class="flags"></div>
   </section>
   </div>
+
+  <section class="panel full graph">
+    <h2 id="graphHead" class="graph-head"><span id="graphTog" class="tog">&#9656;</span>Graph
+      <span class="h2-hint">— plot any register / memory address against another (or step)</span></h2>
+    <div id="graphBody" class="graph-body" hidden>
+      <div class="graph-controls">
+        <label class="axis-group">X axis
+          <span class="axis-row">
+            <select id="xAxis"></select>
+            <input id="xMemAddr" class="memaddr" type="text" placeholder="0x9000" hidden />
+          </span>
+        </label>
+        <label class="axis-group">Y axis
+          <span class="axis-row">
+            <select id="yAxis"></select>
+            <input id="yMemAddr" class="memaddr" type="text" placeholder="0x9000" hidden />
+          </span>
+        </label>
+      </div>
+      <div class="graph-wrap"><canvas id="graph"></canvas></div>
+      <div id="graphHint">Run a function to plot.</div>
+    </div>
+  </section>
 </main>
 
 <script type="module" src="/app.js"></script>

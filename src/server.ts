@@ -19,6 +19,8 @@ interface RunRequest {
   entryLabel?: string;
   sp?: number;
   maxInstructions?: number;
+  /** How many times to call the function in sequence (default 1). */
+  loops?: number;
   /** If true, assemble only and return symbols/listing without executing. */
   compileOnly?: boolean;
   /** If true, record per-instruction snapshots for the step debugger. */
@@ -68,6 +70,7 @@ function handleRun(body: RunRequest) {
     entryPoint,
     stackPointer: body.sp,
     maxInstructions: body.maxInstructions,
+    loops: body.loops,
     trace: body.trace,
     maxTrace: body.maxTrace,
     logPorts: body.ports,
@@ -83,6 +86,7 @@ function handleRun(body: RunRequest) {
   response.result = {
     stopReason: result.stopReason,
     instructionsExecuted: result.instructionsExecuted,
+    loopsCompleted: result.loopsCompleted,
     tStates: result.tStates,
     registers: result.registers,
     flags: result.flags,
@@ -90,6 +94,12 @@ function handleRun(body: RunRequest) {
     trace: result.trace,
     traceTruncated: result.traceTruncated,
     portLog: result.portLog,
+    // Graph data (present only on traced runs): the starting 64KB image
+    // (base64) plus per-step memory writes, so the client can plot any byte.
+    memInitial: result.initialMemory
+      ? Buffer.from(result.initialMemory).toString("base64")
+      : undefined,
+    memWrites: result.memWrites,
   };
   response.dumps = dumps;
   return response;

@@ -3,6 +3,7 @@ import type { Hal } from "z80-emulator";
 import type { PortWrite } from "./types.js";
 
 const PORT_LOG_CAP = 65536;
+const MEM_WRITE_CAP = 1_000_000;
 
 /**
  * A minimal flat 64KB machine: full RAM, passive ports.
@@ -19,6 +20,11 @@ export class FlatMachine implements Hal {
   /** Ports to log, or null to log every port. */
   private readonly logPorts: Set<number> | null;
 
+  /** Memory writes captured in execution order, when capture is enabled. */
+  readonly memWriteLog: { addr: number; value: number }[] = [];
+  /** When true, writeMemory records each store into memWriteLog (capped). */
+  captureWrites = false;
+
   readonly cpu: Z80;
 
   constructor(logPorts?: number[]) {
@@ -34,7 +40,12 @@ export class FlatMachine implements Hal {
   }
 
   writeMemory(address: number, value: number): void {
-    this.memory[address & 0xffff] = value & 0xff;
+    const addr = address & 0xffff;
+    const byte = value & 0xff;
+    if (this.captureWrites && this.memWriteLog.length < MEM_WRITE_CAP) {
+      this.memWriteLog.push({ addr, value: byte });
+    }
+    this.memory[addr] = byte;
   }
 
   contendMemory(_address: number): void {

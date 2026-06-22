@@ -57,6 +57,13 @@ export interface RunOptions {
   returnSentinel?: number;
   /** Hard cap on executed instructions to escape infinite loops. */
   maxInstructions?: number;
+  /**
+   * Number of times to call the function in sequence (default 1). Registers are
+   * seeded only before the first call; later calls reuse the register and memory
+   * state left by the previous one, including the stack pointer. Each call resets
+   * PC to the entry point, then runs until it returns/halts.
+   */
+  loops?: number;
   /** Override the entry point (PC) chosen from the assembly. */
   entryPoint?: number;
   /** Record a per-instruction register/flag snapshot for stepping. */
@@ -102,6 +109,8 @@ export interface TraceStep {
 export interface RunResult {
   stopReason: StopReason;
   instructionsExecuted: number;
+  /** How many function calls completed (returned to the sentinel). */
+  loopsCompleted: number;
   tStates: number;
   /** Final 16-bit register pairs and useful 8-bit views. */
   registers: RegisterSnapshot;
@@ -116,6 +125,14 @@ export interface RunResult {
   portLog: PortWrite[];
   /** Snapshot of the full 64KB after the run. */
   memory: Uint8Array;
+  /** Copy of the full 64KB right before the first instruction (when tracing). */
+  initialMemory?: Uint8Array;
+  /**
+   * Memory writes during a traced run, tagged with the step they occurred in.
+   * Combined with `initialMemory`, lets a client reconstruct any byte's value
+   * at any step. Present only when tracing.
+   */
+  memWrites?: { step: number; addr: number; value: number }[];
 }
 
 export interface DumpRange {

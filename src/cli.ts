@@ -15,6 +15,7 @@ interface CliArgs {
   entry?: number;
   sp?: number;
   maxInstructions?: number;
+  loops?: number;
   listing: boolean;
   assembler: AssemblerId;
   help: boolean;
@@ -87,6 +88,9 @@ function parseArgs(argv: string[]): CliArgs {
       case "--max":
         args.maxInstructions = parseNumber(argv[++i] ?? "");
         break;
+      case "--loops":
+        args.loops = parseNumber(argv[++i] ?? "");
+        break;
       case "--listing":
         args.listing = true;
         break;
@@ -121,6 +125,9 @@ Options:
   --entry <addr>         Override the entry point (PC).
   --sp <addr>            Set the stack pointer (default 0xFF00).
   --max <n>              Instruction cap before giving up (default 5,000,000).
+  --loops <n>            Call the function <n> times in a row (default 1). Registers
+                         are seeded only before the first call; later calls reuse the
+                         register (incl. SP) and memory state left by the previous one.
   --listing              Print the assembled listing (address + bytes per line).
   --assembler <name>     Assembler backend: "z80asm" (default, in-process) or
                          "wla" (external WLA-DX; needs wla-z80 + wlalink on PATH).
@@ -185,6 +192,7 @@ function main(): void {
     entryPoint: args.entry,
     stackPointer: args.sp,
     maxInstructions: args.maxInstructions,
+    loops: args.loops,
     logPorts: args.ports,
   });
 

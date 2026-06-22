@@ -19,6 +19,7 @@ export function formatResult(result: RunResult): string {
 
   const lines = [
     `Stop reason : ${STOP_LABEL[result.stopReason]}`,
+    ...(result.loopsCompleted > 1 ? [`Calls       : ${result.loopsCompleted}`] : []),
     `Instructions: ${result.instructionsExecuted.toLocaleString()}`,
     `T-states    : ${result.tStates.toLocaleString()}`,
     "",

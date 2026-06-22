@@ -16,7 +16,7 @@ import type {
 const DEFAULT_SP = 0xff00;
 const DEFAULT_SENTINEL = 0xffff;
 const DEFAULT_MAX_INSTRUCTIONS = 50_000_000;
-const DEFAULT_MAX_TRACE = 50_000;
+const DEFAULT_MAX_TRACE = 500_000;
 
 /** Run an already-assembled image and return the final machine state. */
 export function run(assembled: AssembleResult, options: RunOptions = {}): RunResult {
@@ -33,15 +33,23 @@ export function run(assembled: AssembleResult, options: RunOptions = {}): RunRes
   const regs = machine.cpu.regs;
   const sp = options.stackPointer ?? DEFAULT_SP;
   const sentinel = options.returnSentinel ?? DEFAULT_SENTINEL;
-  regs.sp = sp;
+  const entry = (options.registers?.pc ?? options.entryPoint ?? assembled.entryPoint ?? 0) & 0xffff;
+  const loops = Math.max(1, Math.floor(options.loops ?? 1));
 
-  // Push the sentinel return address so a final RET lands on it.
-  regs.sp = (regs.sp - 1) & 0xffff;
-  machine.memory[regs.sp] = (sentinel >> 8) & 0xff;
-  regs.sp = (regs.sp - 1) & 0xffff;
-  machine.memory[regs.sp] = sentinel & 0xff;
+  // Set up one call: push the sentinel return address onto the current stack so
+  // a final RET lands on it, then point PC at the entry. Only PC is reset; SP and
+  // all other registers carry over, so an unbalanced function's stack effects
+  // accumulate across loop iterations.
+  const setupCall = () => {
+    regs.sp = (regs.sp - 1) & 0xffff;
+    machine.memory[regs.sp] = (sentinel >> 8) & 0xff;
+    regs.sp = (regs.sp - 1) & 0xffff;
+    machine.memory[regs.sp] = sentinel & 0xff;
+    regs.pc = entry;
+  };
 
-  // Seed registers (pairs first, then 8-bit so the latter win on conflict).
+  // Seed registers once, before the first call (pairs first, then 8-bit so the
+  // latter win on conflict). Subsequent loops reuse the prior call's state.
   const r = options.registers ?? {};
   if (r.af !== undefined) regs.af = r.af & 0xffff;
   if (r.bc !== undefined) regs.bc = r.bc & 0xffff;
@@ -57,10 +65,19 @@ export function run(assembled: AssembleResult, options: RunOptions = {}): RunRes
   if (r.h !== undefined) regs.h = r.h & 0xff;
   if (r.l !== undefined) regs.l = r.l & 0xff;
 
-  const entry = r.pc ?? options.entryPoint ?? assembled.entryPoint ?? 0;
-  regs.pc = entry & 0xffff;
+  // Seed the stack pointer once; later calls inherit wherever the prior one left it.
+  regs.sp = sp;
+  setupCall();
 
   const initial = { registers: snapshot(regs), flags: decodeFlags(regs.f) };
+
+  // When tracing, capture the starting memory image and per-step memory writes
+  // so a client can reconstruct any byte's value at any step.
+  const initialMemory = options.trace ? machine.memory.slice() : undefined;
+  const memWrites: { step: number; addr: number; value: number }[] | undefined =
+    options.trace ? [] : undefined;
+  let memWriteCursor = 0;
+  if (options.trace) machine.captureWrites = true;
 
   const trace: TraceStep[] | undefined = options.trace ? [] : undefined;
   const maxTrace = options.maxTrace ?? DEFAULT_MAX_TRACE;
@@ -72,20 +89,33 @@ export function run(assembled: AssembleResult, options: RunOptions = {}): RunRes
   let stopReason: StopReason = "max-instructions";
   let executed = 0;
   let traceTruncated = false;
+  let loopsCompleted = 0;
 
   // Record the starting state as step 0.
   if (trace) trace.push({ pc: regs.pc, registers: snapshot(regs), flags: decodeFlags(regs.f) });
 
   while (executed < maxInstructions) {
     if (regs.pc === sentinel) {
-      stopReason = "returned";
-      break;
+      loopsCompleted++;
+      if (loopsCompleted >= loops) {
+        stopReason = "returned";
+        break;
+      }
+      // Begin the next call without re-seeding registers; PC/SP are reset while
+      // the rest of the register and memory state carries over.
+      setupCall();
+      continue;
     }
     machine.cpu.step();
     executed++;
     if (trace) {
       if (trace.length <= maxTrace) {
         trace.push({ pc: regs.pc, registers: snapshot(regs), flags: decodeFlags(regs.f) });
+        // Tag writes from this instruction with the step they become visible in.
+        for (; memWriteCursor < machine.memWriteLog.length; memWriteCursor++) {
+          const w = machine.memWriteLog[memWriteCursor];
+          memWrites!.push({ step: executed, addr: w.addr, value: w.value });
+        }
       } else {
         traceTruncated = true;
       }
@@ -99,6 +129,7 @@ export function run(assembled: AssembleResult, options: RunOptions = {}): RunRes
   return {
     stopReason,
     instructionsExecuted: executed,
+    loopsCompleted,
     tStates: machine.tStateCount,
     registers: snapshot(regs),
     flags: decodeFlags(regs.f),
@@ -107,6 +138,8 @@ export function run(assembled: AssembleResult, options: RunOptions = {}): RunRes
     traceTruncated: traceTruncated || undefined,
     portLog: machine.portLog,
     memory: machine.memory,
+    initialMemory,
+    memWrites,
   };
 }
 

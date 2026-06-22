@@ -153,8 +153,13 @@ function serializeProject() {
       startLabel: $("startLabel").value,
       regs: $("regs").value,
       sp: $("sp").value,
+      loops: $("loops").value,
       dump: $("dump").value,
       portDump: $("portDump").value,
+      xAxis: $("xAxis").value,
+      yAxis: $("yAxis").value,
+      xMemAddr: $("xMemAddr").value,
+      yMemAddr: $("yMemAddr").value,
     },
   };
 }
@@ -189,8 +194,14 @@ function loadProject(obj) {
   if (s.assembler) $("assembler").value = s.assembler;
   $("regs").value = s.regs ?? "";
   $("sp").value = s.sp ?? "";
+  $("loops").value = s.loops ?? "";
   $("dump").value = s.dump ?? "";
   $("portDump").value = s.portDump ?? "";
+  if (s.xAxis) $("xAxis").value = s.xAxis;
+  if (s.yAxis) $("yAxis").value = s.yAxis;
+  $("xMemAddr").value = s.xMemAddr ?? "";
+  $("yMemAddr").value = s.yMemAddr ?? "";
+  onAxisChange();
   wantStartLabel = s.startLabel ?? "";
 
   activeIndex = 0;
@@ -497,12 +508,18 @@ function showStep(index) {
     stepIndex === trace.length - 1
       ? `done @ ${hex(snap.pc, 4)}`
       : `next @ ${hex(snap.pc, 4)}  ${instr}`;
+
+  renderGraph(); // keep the current-step marker in sync (no-op when collapsed)
 }
 
 function setupStepper(data, offsets) {
   const r = data.result;
   const trace = r.trace;
-  lastRun = { trace, initial: r.initial, listing: data.listing, offsets, dumps: data.dumps };
+  lastRun = {
+    trace, initial: r.initial, listing: data.listing, offsets, dumps: data.dumps,
+    memInitial: decodeB64(r.memInitial), memWrites: r.memWrites ?? [],
+    numSteps: trace ? trace.length : 0,
+  };
 
   const stepper = $("stepper");
   if (!trace || trace.length <= 1) {
@@ -535,6 +552,7 @@ async function send(compileOnly) {
     dumps: parseDumps($("dump").value),
     ports: parsePorts($("portDump").value),
     sp: parseNumber($("sp").value),
+    loops: parseNumber($("loops").value),
   };
 
   let data;
@@ -580,16 +598,216 @@ async function send(compileOnly) {
   status.className = "status good";
   const warn = data.warning ? ` &middot; <span style="color:var(--bad)">${data.warning}</span>` : "";
   const trunc = r.traceTruncated ? " &middot; trace truncated at cap" : "";
+  const loops = r.loopsCompleted > 1 ? ` &middot; <b>${r.loopsCompleted}</b> calls` : "";
   $("summary").innerHTML =
     `<b>${ASM_LABEL[data.assembler] ?? data.assembler}</b> &middot; ` +
     `assembled <b>${data.byteCount}</b> bytes &middot; started at <b>${hex(data.usedEntryPoint ?? 0, 4)}</b>` +
     `${$("startLabel").value ? ` (${$("startLabel").value})` : ""}${warn}<br>` +
-    `${STOP_LABEL[r.stopReason] ?? r.stopReason} &middot; ` +
+    `${STOP_LABEL[r.stopReason] ?? r.stopReason}${loops} &middot; ` +
     `${r.instructionsExecuted.toLocaleString()} instructions &middot; ${r.tStates.toLocaleString()} T-states${trunc}`;
 
   setupStepper(data, offsets);
   renderMemory(data.dumps);
   renderPortLog(r.portLog);
+  renderGraph();
+}
+
+// ---- Graph panel -------------------------------------------------------------
+
+// Axis choices, grouped for the <optgroup> dropdowns. Value "step" = time axis,
+// "mem" = a memory address (revealed via an adjacent input), everything else is
+// a RegisterSnapshot key.
+const AXIS_GROUPS = [
+  ["Time", [["Step (time)", "step"]]],
+  ["16-bit registers", [
+    ["AF", "af"], ["BC", "bc"], ["DE", "de"], ["HL", "hl"],
+    ["AF'", "afPrime"], ["BC'", "bcPrime"], ["DE'", "dePrime"], ["HL'", "hlPrime"],
+    ["IX", "ix"], ["IY", "iy"], ["SP", "sp"], ["PC", "pc"],
+  ]],
+  ["8-bit registers", [
+    ["A", "a"], ["B", "b"], ["C", "c"], ["D", "d"],
+    ["E", "e"], ["H", "h"], ["L", "l"], ["F", "f"],
+  ]],
+  ["Memory", [["Memory address…", "mem"]]],
+];
+
+function buildAxisSelect(sel, defaultVal) {
+  sel.innerHTML = "";
+  for (const [groupName, items] of AXIS_GROUPS) {
+    const og = document.createElement("optgroup");
+    og.label = groupName;
+    for (const [label, value] of items) {
+      const opt = document.createElement("option");
+      opt.value = value;
+      opt.textContent = label;
+      og.appendChild(opt);
+    }
+    sel.appendChild(og);
+  }
+  sel.value = defaultVal;
+}
+
+/** Decode a base64 string into a Uint8Array, or null. */
+function decodeB64(s) {
+  if (!s) return null;
+  const bin = atob(s);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return arr;
+}
+
+/** Reconstruct a memory byte's value across every step from initial + writes. */
+function memSeriesFor(addr) {
+  const n = lastRun.numSteps;
+  const out = new Array(n);
+  const a = addr & 0xffff;
+  let value = lastRun.memInitial ? lastRun.memInitial[a] : 0;
+  const writes = (lastRun.memWrites ?? []).filter((w) => w.addr === a);
+  let wi = 0;
+  for (let i = 0; i < n; i++) {
+    while (wi < writes.length && writes[wi].step <= i) value = writes[wi++].value;
+    out[i] = value;
+  }
+  return out;
+}
+
+/** Build a per-step number[] for an axis selection (null if invalid). */
+function seriesFor(axisVal, addr) {
+  const n = lastRun.numSteps;
+  if (axisVal === "step") return Array.from({ length: n }, (_, i) => i);
+  if (axisVal === "mem") return addr === undefined ? null : memSeriesFor(addr);
+  return lastRun.trace.map((s) => s.registers[axisVal]);
+}
+
+function axisLabel(axisVal, addr) {
+  if (axisVal === "step") return "Step";
+  if (axisVal === "mem") return addr === undefined ? "Memory" : `mem ${hex(addr, 4)}`;
+  return axisVal.replace("Prime", "'").toUpperCase();
+}
+
+function formatTick(v) {
+  const r = Math.round(v);
+  return Math.abs(v - r) < 1e-9 ? String(r) : v.toFixed(1);
+}
+
+/** Draw the parametric/line chart of xs vs ys onto the canvas. */
+function drawChart(canvas, xs, ys, xLabel, yLabel) {
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = canvas.clientWidth || 600;
+  const cssH = canvas.clientHeight || 320;
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssW, cssH);
+
+  const padL = 56, padR = 16, padT = 14, padB = 34;
+  const plotW = cssW - padL - padR;
+  const plotH = cssH - padT - padB;
+
+  let xMin = Math.min(...xs), xMax = Math.max(...xs);
+  let yMin = Math.min(...ys), yMax = Math.max(...ys);
+  if (xMin === xMax) { xMin -= 1; xMax += 1; }
+  if (yMin === yMax) { yMin -= 1; yMax += 1; }
+  const sx = (v) => padL + ((v - xMin) / (xMax - xMin)) * plotW;
+  const sy = (v) => padT + plotH - ((v - yMin) / (yMax - yMin)) * plotH;
+
+  const accent = "#89b4fa", muted = "#9399b2", border = "#45475a", good = "#a6e3a1";
+
+  ctx.strokeStyle = border;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(padL, padT, plotW, plotH);
+
+  ctx.font = "11px ui-monospace, monospace";
+  const TICKS = 5;
+  ctx.fillStyle = muted;
+  ctx.strokeStyle = "#313244";
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  for (let i = 0; i <= TICKS; i++) {
+    const v = yMin + (yMax - yMin) * (i / TICKS);
+    const y = sy(v);
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+    ctx.fillText(formatTick(v), padL - 6, y);
+  }
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+  for (let i = 0; i <= TICKS; i++) {
+    const v = xMin + (xMax - xMin) * (i / TICKS);
+    const x = sx(v);
+    ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + plotH); ctx.stroke();
+    ctx.fillText(formatTick(v), x, padT + plotH + 6);
+  }
+
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (let i = 0; i < xs.length; i++) {
+    const x = sx(xs[i]), y = sy(ys[i]);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  if (xs.length <= 400) {
+    ctx.fillStyle = accent;
+    for (let i = 0; i < xs.length; i++) {
+      ctx.beginPath(); ctx.arc(sx(xs[i]), sy(ys[i]), 2, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  // Highlight the step the debugger is currently on.
+  if (stepIndex >= 0 && stepIndex < xs.length) {
+    ctx.fillStyle = good;
+    ctx.beginPath(); ctx.arc(sx(xs[stepIndex]), sy(ys[stepIndex]), 4, 0, Math.PI * 2); ctx.fill();
+  }
+
+  ctx.fillStyle = muted;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "bottom";
+  ctx.fillText(xLabel, padL + plotW / 2, cssH);
+  ctx.save();
+  ctx.translate(12, padT + plotH / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.textBaseline = "top";
+  ctx.fillText(yLabel, 0, 0);
+  ctx.restore();
+}
+
+/** Read the axis selections and (re)draw the graph; no-op when collapsed. */
+function renderGraph() {
+  if ($("graphBody").hidden) return;
+  const canvas = $("graph");
+  const hint = $("graphHint");
+  if (!lastRun || !lastRun.trace || lastRun.numSteps < 2) {
+    canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
+    hint.textContent = "Run a function to plot.";
+    return;
+  }
+  const xSel = $("xAxis").value, ySel = $("yAxis").value;
+  const xAddr = xSel === "mem" ? parseNumber($("xMemAddr").value) : undefined;
+  const yAddr = ySel === "mem" ? parseNumber($("yMemAddr").value) : undefined;
+  if ((xSel === "mem" && xAddr === undefined) || (ySel === "mem" && yAddr === undefined)) {
+    hint.textContent = "Enter a memory address (e.g. 0x9000) for the memory axis.";
+    return;
+  }
+  const xs = seriesFor(xSel, xAddr);
+  const ys = seriesFor(ySel, yAddr);
+  hint.textContent =
+    `${lastRun.numSteps} steps · X = ${axisLabel(xSel, xAddr)} · Y = ${axisLabel(ySel, yAddr)}`;
+  drawChart(canvas, xs, ys, axisLabel(xSel, xAddr), axisLabel(ySel, yAddr));
+}
+
+function toggleGraph() {
+  const body = $("graphBody");
+  body.hidden = !body.hidden;
+  $("graphTog").innerHTML = body.hidden ? "&#9656;" : "&#9662;";
+  renderGraph();
+}
+
+function onAxisChange() {
+  $("xMemAddr").hidden = $("xAxis").value !== "mem";
+  $("yMemAddr").hidden = $("yAxis").value !== "mem";
+  renderGraph();
 }
 
 // ---- Init --------------------------------------------------------------------
@@ -612,6 +830,17 @@ renderPortLog(null);
 $("memTabBtn").addEventListener("click", () => showSubPane("mem"));
 $("portTabBtn").addEventListener("click", () => showSubPane("port"));
 $("assembler").addEventListener("change", refreshLabels);
+
+// Graph panel: build axis dropdowns and wire up redraws.
+buildAxisSelect($("xAxis"), "step");
+buildAxisSelect($("yAxis"), "hl");
+onAxisChange(); // set initial memory-input visibility
+$("graphHead").addEventListener("click", toggleGraph);
+$("xAxis").addEventListener("change", onAxisChange);
+$("yAxis").addEventListener("change", onAxisChange);
+$("xMemAddr").addEventListener("input", renderGraph);
+$("yMemAddr").addEventListener("input", renderGraph);
+window.addEventListener("resize", () => { if (!$("graphBody").hidden) renderGraph(); });
 
 // Drag-and-drop source files onto the editor panel; each opens in a new tab.
 const sourcePanel = document.querySelector(".source");
